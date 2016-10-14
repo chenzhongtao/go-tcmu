@@ -5,8 +5,9 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/coreos/go-tcmu/scsi"
-	"github.com/prometheus/common/log"
+	"github.com/Sirupsen/logrus"
+
+	"go-tcmu/scsi"
 )
 
 // SCSICmdHandler is a simple request/response handler for SCSI commands coming to TCMU.
@@ -34,6 +35,8 @@ var defaultInquiry = InquiryInfo{
 }
 
 func (h ReadWriterAtCmdHandler) HandleCommand(cmd *SCSICmd) (SCSIResponse, error) {
+	logrus.Debug("[ReadWriterAtCmdHandler:HandleCommand]")
+	logrus.Debugf("SCSI command 0x%x", cmd.Command())
 	switch cmd.Command() {
 	case scsi.Inquiry:
 		if h.Inq == nil {
@@ -53,12 +56,13 @@ func (h ReadWriterAtCmdHandler) HandleCommand(cmd *SCSICmd) (SCSIResponse, error
 	case scsi.Write6, scsi.Write10, scsi.Write12, scsi.Write16:
 		return EmulateWrite(cmd, h.RW)
 	default:
-		log.Debugf("Ignore unknown SCSI command 0x%x\n", cmd.Command())
+		logrus.Debugf("Ignore unknown SCSI command 0x%x\n", cmd.Command())
 	}
 	return cmd.NotHandled(), nil
 }
 
 func EmulateInquiry(cmd *SCSICmd, inq *InquiryInfo) (SCSIResponse, error) {
+	logrus.Debug("[EmulateInquiry]")
 	if (cmd.GetCDB(1) & 0x01) == 0 {
 		if cmd.GetCDB(2) == 0x00 {
 			return EmulateStdInquiry(cmd, inq)
@@ -79,6 +83,7 @@ func FixedString(s string, length int) []byte {
 }
 
 func EmulateStdInquiry(cmd *SCSICmd, inq *InquiryInfo) (SCSIResponse, error) {
+	logrus.Debug("[EmulateStdInquiry]")
 	buf := make([]byte, 36)
 	buf[2] = 0x05 // SPC-3
 	buf[3] = 0x02 // response data format
@@ -99,8 +104,9 @@ func EmulateStdInquiry(cmd *SCSICmd, inq *InquiryInfo) (SCSIResponse, error) {
 }
 
 func EmulateEvpdInquiry(cmd *SCSICmd, inq *InquiryInfo) (SCSIResponse, error) {
+	logrus.Debug("[EmulateEvpdInquiry]")
 	vpdType := cmd.GetCDB(2)
-	log.Debugf("SCSI EVPD Inquiry 0x%x\n", vpdType)
+	logrus.Debugf("SCSI EVPD Inquiry 0x%x\n", vpdType)
 	switch vpdType {
 	case 0x0: // Supported VPD pages
 		// The absolute minimum.
@@ -184,10 +190,12 @@ func EmulateEvpdInquiry(cmd *SCSICmd, inq *InquiryInfo) (SCSIResponse, error) {
 }
 
 func EmulateTestUnitReady(cmd *SCSICmd) (SCSIResponse, error) {
+	logrus.Debug("[EmulateTestUnitReady]")
 	return cmd.Ok(), nil
 }
 
 func EmulateServiceActionIn(cmd *SCSICmd) (SCSIResponse, error) {
+	logrus.Debug("[EmulateServiceActionIn]")
 	if cmd.GetCDB(1) == scsi.ReadCapacity16 {
 		return EmulateReadCapacity16(cmd)
 	}
@@ -195,6 +203,7 @@ func EmulateServiceActionIn(cmd *SCSICmd) (SCSIResponse, error) {
 }
 
 func EmulateReadCapacity16(cmd *SCSICmd) (SCSIResponse, error) {
+	logrus.Debug("[EmulateReadCapacity16]")
 	buf := make([]byte, 32)
 	order := binary.BigEndian
 	// This is in LBAs, and the "index of the last LBA", so minus 1. Friggin spec.
@@ -232,6 +241,7 @@ func CachingModePage(w io.Writer, wce bool) {
 // EmulateModeSense responds to a static Mode Sense command. `wce` enables or diables
 // the SCSI "Write Cache Enabled" flag.
 func EmulateModeSense(cmd *SCSICmd, wce bool) (SCSIResponse, error) {
+	logrus.Debug("[EmulateModeSense]")
 	pgs := &bytes.Buffer{}
 	outlen := int(cmd.XferLen())
 
@@ -270,6 +280,7 @@ func EmulateModeSense(cmd *SCSICmd, wce bool) (SCSIResponse, error) {
 // EmulateModeSelect checks that the only mode selected is the static one returned from
 // EmulateModeSense. `wce` should match the Write Cache Enabled of the EmulateModeSense call.
 func EmulateModeSelect(cmd *SCSICmd, wce bool) (SCSIResponse, error) {
+	logrus.Debug("[EmulateModeSelect]")
 	selectTen := (cmd.GetCDB(0) == scsi.ModeSelect10)
 	page := cmd.GetCDB(2) & 0x3f
 	subpage := cmd.GetCDB(3)
@@ -313,13 +324,14 @@ func EmulateModeSelect(cmd *SCSICmd, wce bool) (SCSIResponse, error) {
 	/* Verify what was selected is identical to what sense returns, since we
 	don't support actually setting anything. */
 	if !bytes.Equal(inBuf[hdrLen:len(b)], b) {
-		log.Errorf("not equal for some reason: %#v %#v", inBuf[hdrLen:len(b)], b)
+		logrus.Errorf("not equal for some reason: %#v %#v", inBuf[hdrLen:len(b)], b)
 		return cmd.CheckCondition(scsi.SenseIllegalRequest, scsi.AscInvalidFieldInParameterList), nil
 	}
 	return cmd.Ok(), nil
 }
 
 func EmulateRead(cmd *SCSICmd, r io.ReaderAt) (SCSIResponse, error) {
+	logrus.Debug("[EmulateRead]")
 	offset := cmd.LBA() * uint64(cmd.Device().Sizes().BlockSize)
 	length := int(cmd.XferLen() * uint32(cmd.Device().Sizes().BlockSize))
 	if cmd.Buf == nil {
@@ -331,26 +343,27 @@ func EmulateRead(cmd *SCSICmd, r io.ReaderAt) (SCSIResponse, error) {
 	}
 	n, err := r.ReadAt(cmd.Buf[:length], int64(offset))
 	if n < length {
-		log.Errorln("read/read failed: unable to copy enough")
+		logrus.Errorln("read/read failed: unable to copy enough")
 		return cmd.MediumError(), nil
 	}
 	if err != nil {
-		log.Errorln("read/read failed: error:", err)
+		logrus.Errorln("read/read failed: error:", err)
 		return cmd.MediumError(), nil
 	}
 	n, err = cmd.Write(cmd.Buf[:length])
 	if n < length {
-		log.Errorln("read/write failed: unable to copy enough")
+		logrus.Errorln("read/write failed: unable to copy enough")
 		return cmd.MediumError(), nil
 	}
 	if err != nil {
-		log.Errorln("read/write failed: error:", err)
+		logrus.Errorln("read/write failed: error:", err)
 		return cmd.MediumError(), nil
 	}
 	return cmd.Ok(), nil
 }
 
 func EmulateWrite(cmd *SCSICmd, r io.WriterAt) (SCSIResponse, error) {
+	logrus.Debug("[EmulateWrite]")
 	offset := cmd.LBA() * uint64(cmd.Device().Sizes().BlockSize)
 	length := int(cmd.XferLen() * uint32(cmd.Device().Sizes().BlockSize))
 	if cmd.Buf == nil {
@@ -362,20 +375,20 @@ func EmulateWrite(cmd *SCSICmd, r io.WriterAt) (SCSIResponse, error) {
 	}
 	n, err := cmd.Read(cmd.Buf[:int(length)])
 	if n < length {
-		log.Errorln("write/read failed: unable to copy enough")
+		logrus.Errorln("write/read failed: unable to copy enough")
 		return cmd.MediumError(), nil
 	}
 	if err != nil {
-		log.Errorln("write/read failed: error:", err)
+		logrus.Errorln("write/read failed: error:", err)
 		return cmd.MediumError(), nil
 	}
 	n, err = r.WriteAt(cmd.Buf[:length], int64(offset))
 	if n < length {
-		log.Errorln("write/write failed: unable to copy enough")
+		logrus.Errorln("write/write failed: unable to copy enough")
 		return cmd.MediumError(), nil
 	}
 	if err != nil {
-		log.Errorln("write/write failed: error:", err)
+		logrus.Errorln("write/write failed: error:", err)
 		return cmd.MediumError(), nil
 	}
 	return cmd.Ok(), nil

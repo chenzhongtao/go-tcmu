@@ -1,0 +1,24 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "2avCvSn0XonfApKKuTMyiQmk7s0=",
+			"path": "github.com/Sirupsen/logrus",
+			"revision": "3ec0642a7fb6488f65b06f9040adc67e3990296a",
+			"revisionTime": "2016-08-29T20:23:21Z"
+		},
+		{
+			"checksumSHA1": "fKMoxZehNhXbklRQy7lpFAVH0XY=",
+			"path": "github.com/prometheus/common/log",
+			"revision": "616e90af75cc300730196d04f3676f838d70414f",
+			"revisionTime": "2016-08-29T15:30:39Z"
+		},
+		{
+			"checksumSHA1": "4tfBvyv+IN7UF/RJ221dZNkrlCE=",
+			"path": "golang.org/x/sys/unix",
+			"revision": ""
+		}
+	],
+	"rootPath": "go-tcmu/cmd/tcmufile"
+}

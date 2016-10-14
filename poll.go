@@ -3,8 +3,10 @@ package tcmu
 import (
 	"fmt"
 
-	"github.com/coreos/go-tcmu/scsi"
-	"github.com/prometheus/common/log"
+	"github.com/Sirupsen/logrus"
+
+	"go-tcmu/scsi"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -13,6 +15,7 @@ const (
 )
 
 func (d *Device) beginPoll() {
+	logrus.Debug("[Device:beginPoll]")
 	// Entry point for the goroutine.
 	go d.recvResponse()
 	buf := make([]byte, 4)
@@ -27,7 +30,7 @@ func (d *Device) beginPoll() {
 		for {
 			cmd, err := d.getNextCommand()
 			if err != nil {
-				log.Errorf("error getting next command: %s", err)
+				logrus.Errorf("error getting next command: %s", err)
 				break
 			}
 			if cmd == nil {
@@ -40,24 +43,26 @@ func (d *Device) beginPoll() {
 }
 
 func (d *Device) recvResponse() {
+	logrus.Debug("[Device:recvResponse]")
 	var n int
 	buf := make([]byte, 4)
 	for resp := range d.respChan {
 		err := d.completeCommand(resp)
 		if err != nil {
-			log.Errorf("error completing command: %s", err)
+			logrus.Errorf("error completing command: %s", err)
 			return
 		}
 		/* Tell the fd there's something new */
 		n, err = unix.Write(d.uioFd, buf)
 		if n == -1 && err != nil {
-			log.Errorln("poll write")
+			logrus.Errorln("poll write")
 			return
 		}
 	}
 }
 
 func (d *Device) completeCommand(resp SCSIResponse) error {
+	logrus.Debug("[Device:completeCommand]")
 	off := d.tailEntryOff()
 	for d.entHdrOp(off) != tcmuOpCmd {
 		d.mbSetTail((d.mbCmdTail() + uint32(d.entHdrGetLen(off))) % d.mbCmdrSize())
@@ -75,6 +80,7 @@ func (d *Device) completeCommand(resp SCSIResponse) error {
 }
 
 func (d *Device) getNextCommand() (*SCSICmd, error) {
+	logrus.Debug("[Device:getNextCommand]")
 	//d.debugPrintMb()
 	//fmt.Printf("nextEntryOff: %d\n", d.nextEntryOff())
 	//fmt.Printf("headEntryOff: %d\n", d.headEntryOff())

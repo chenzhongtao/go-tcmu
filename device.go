@@ -16,7 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/prometheus/common/log"
 )
 
 const (
@@ -26,9 +25,9 @@ const (
 
 type Device struct {
 	scsi    *SCSIHandler
-	devPath string
+	devPath string // /dev/tcmufile
 
-	hbaDir     string
+	hbaDir     string // "/sys/kernel/config/target/core/user_30"
 	deviceName string
 
 	uioFd    int
@@ -46,6 +45,7 @@ type WWN interface {
 	NexusID() string
 }
 
+// go-tcmu//vol1
 func (d *Device) GetDevConfig() string {
 	return fmt.Sprintf("go-tcmu//%s", d.scsi.VolumeName)
 }
@@ -89,6 +89,7 @@ func (d *Device) Close() error {
 }
 
 func (d *Device) preEnableTcmu() error {
+	logrus.Debug("[Device:preEnableTcmu]")
 	err := writeLines(path.Join(d.hbaDir, d.scsi.VolumeName, "control"), []string{
 		fmt.Sprintf("dev_size=%d", d.scsi.DataSizes.VolumeSize),
 		fmt.Sprintf("dev_config=%s", d.GetDevConfig()),
@@ -104,17 +105,20 @@ func (d *Device) preEnableTcmu() error {
 	})
 }
 
+// /sys/kernel/config/target/loopback/naa.50000000d0573dc6
 func (d *Device) getSCSIPrefixAndWnn() (string, string) {
 	return path.Join(scsiDir, d.scsi.WWN.DeviceID(), "tpgt_1"), d.scsi.WWN.NexusID()
 }
 
+// /sys/kernel/config/target/loopback/naa.50000000d0573dc6/tpgt_1/lun/lun_0
 func (d *Device) getLunPath(prefix string) string {
 	return path.Join(prefix, "lun", fmt.Sprintf("lun_%d", d.scsi.LUN))
 }
 
 func (d *Device) postEnableTcmu() error {
+	logrus.Debug("[Device:postEnableTcmu]")
 	prefix, nexusWnn := d.getSCSIPrefixAndWnn()
-
+	// /sys/kernel/config/target/loopback/naa.50000000d0573dc6/tpgt_1/nexus: naa.50000001d0573dc6
 	err := writeLines(path.Join(prefix, "nexus"), []string{
 		nexusWnn,
 	})
@@ -122,12 +126,13 @@ func (d *Device) postEnableTcmu() error {
 		return err
 	}
 
+	// /sys/kernel/config/target/loopback/naa.50000000d0573dc6/tpgt_1/lun/lun_0
 	lunPath := d.getLunPath(prefix)
 	logrus.Debugf("Creating directory: %s", lunPath)
 	if err := os.MkdirAll(lunPath, 0755); err != nil && !os.IsExist(err) {
 		return err
 	}
-
+	// /sys/kernel/config/target/loopback/naa.50000000d0573dc6/tpgt_1/lun/lun_0/vol1 => /sys/kernel/config/target/core/user_30/vol1
 	logrus.Debugf("Linking: %s => %s", path.Join(lunPath, d.scsi.VolumeName), path.Join(d.hbaDir, d.scsi.VolumeName))
 	if err := os.Symlink(path.Join(d.hbaDir, d.scsi.VolumeName), path.Join(lunPath, d.scsi.VolumeName)); err != nil {
 		return err
@@ -137,6 +142,7 @@ func (d *Device) postEnableTcmu() error {
 }
 
 func (d *Device) createDevEntry() error {
+	// /dev/tcmufile
 	os.MkdirAll(d.devPath, 0755)
 
 	dev := filepath.Join(d.devPath, d.scsi.VolumeName)
@@ -147,6 +153,8 @@ func (d *Device) createDevEntry() error {
 
 	tgt, _ := d.getSCSIPrefixAndWnn()
 
+	// /sys/kernel/config/target/loopback/naa.50000000d0573dc6/tpgt_1/address
+	// 7:0:1
 	address, err := ioutil.ReadFile(path.Join(tgt, "address"))
 	if err != nil {
 		return err
@@ -197,7 +205,7 @@ func (d *Device) createDevEntry() error {
 	if err != nil {
 		return err
 	}
-
+	// Creating device /dev/tcmufile/vol1 8:96
 	logrus.Debugf("Creating device %s %d:%d", dev, major, minor)
 	return mknod(dev, major, minor)
 }
@@ -211,6 +219,7 @@ func mknod(device string, major, minor int) error {
 }
 
 func writeLines(target string, lines []string) error {
+	// /sys/kernel/config/target/core/user_30/vol1
 	dir := path.Dir(target)
 	if stat, err := os.Stat(dir); os.IsNotExist(err) {
 		logrus.Debugf("Creating directory: %s", dir)
@@ -234,6 +243,7 @@ func writeLines(target string, lines []string) error {
 }
 
 func (d *Device) start() (err error) {
+	logrus.Debug("[Device:start]")
 	err = d.findDevice()
 	if err != nil {
 		return
@@ -246,6 +256,7 @@ func (d *Device) start() (err error) {
 }
 
 func (d *Device) findDevice() error {
+	logrus.Debug("[Device:findDevice]")
 	err := filepath.Walk("/dev", func(path string, i os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -257,6 +268,7 @@ func (d *Device) findDevice() error {
 			return nil
 		}
 		sysfile := fmt.Sprintf("/sys/class/uio/%s/name", i.Name())
+		// tcm-user/30/vol1/go-tcmu//vol1
 		bytes, err := ioutil.ReadFile(sysfile)
 		if err != nil {
 			return err
@@ -264,14 +276,16 @@ func (d *Device) findDevice() error {
 		split := strings.SplitN(strings.TrimRight(string(bytes), "\n"), "/", 4)
 		if split[0] != "tcm-user" {
 			// Not a TCM device
-			log.Debugf("%s is not a tcm-user device", i.Name())
+			logrus.Debugf("%s is not a tcm-user device", i.Name())
 			return nil
 		}
+		// go-tcmu//vol1
 		if split[3] != d.GetDevConfig() {
 			// Not a TCM device
-			log.Debugf("%s is not our tcm-user device", i.Name())
+			logrus.Debugf("%s is not our tcm-user device", i.Name())
 			return nil
 		}
+		// 30 vol1  uio0
 		err = d.openDevice(split[1], split[2], i.Name())
 		if err != nil {
 			return err
@@ -285,6 +299,7 @@ func (d *Device) findDevice() error {
 }
 
 func (d *Device) openDevice(user string, vol string, uio string) error {
+	logrus.Debugf("[Device]:openDevice user:%s,vol:%s,uio:%s", user, vol, uio)
 	var err error
 	d.deviceName = vol
 	//d.uioFd, err = syscall.Open(fmt.Sprintf("/dev/%s", uio), syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
@@ -307,13 +322,13 @@ func (d *Device) openDevice(user string, vol string, uio string) error {
 }
 
 func (d *Device) debugPrintMb() {
-	log.Debugf("Got a TCMU mailbox, version: %d\n", d.mbVersion())
-	log.Debugf("mapsize: %d\n", d.mapsize)
-	log.Debugf("mbFlags: %d\n", d.mbFlags())
-	log.Debugf("mbCmdrOffset: %d\n", d.mbCmdrOffset())
-	log.Debugf("mbCmdrSize: %d\n", d.mbCmdrSize())
-	log.Debugf("mbCmdHead: %d\n", d.mbCmdHead())
-	log.Debugf("mbCmdTail: %d\n", d.mbCmdTail())
+	logrus.Debugf("Got a TCMU mailbox, version: %d\n", d.mbVersion())
+	logrus.Debugf("mapsize: %d\n", d.mapsize)
+	logrus.Debugf("mbFlags: %d\n", d.mbFlags())
+	logrus.Debugf("mbCmdrOffset: %d\n", d.mbCmdrOffset())
+	logrus.Debugf("mbCmdrSize: %d\n", d.mbCmdrSize())
+	logrus.Debugf("mbCmdHead: %d\n", d.mbCmdHead())
+	logrus.Debugf("mbCmdTail: %d\n", d.mbCmdTail())
 }
 
 func (d *Device) teardown() error {
